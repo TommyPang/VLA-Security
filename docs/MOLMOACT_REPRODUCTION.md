@@ -151,12 +151,53 @@ evaluation setting**, because completed episode files are reused.
 For a short check, pass `--layout-seeds 200 --trials 1 --max-steps 1` to `eval`
 or `clean` and use a separate output root. Full evaluation can take many hours.
 
+## Loss and random-patch controls
+
+The controls keep the teacher-forced joint configuration and disable one loss
+term each. Both retain the same TV regularization and validation checkpoint
+selection. Run on two idle GPUs after collecting the shared data/masks:
+
+```bash
+bash scripts/run_molmoact_control.sh action_only 0 --then-random
+# In a second terminal:
+bash scripts/run_molmoact_control.sh cot_only 1
+```
+
+The physical GPU index is the second argument. The drivers wait for that GPU
+to have less than 2 GB used before starting, write phase/error status files,
+and run smoke, 12,000-step optimization, and 50-trial evaluation. The optional
+random control uses a NumPy `default_rng(0)` uniform integer RGB texture of
+180×180 pixels with the same 0.5 m table-only projection.
+
+Completed training is marked by `train.done`. An evaluation patch hash guards
+against reusing episodes after a different checkpoint is selected. Inspect any
+failure before restarting; incomplete training restarts from scratch. Set
+`CONTROL_ROOT` to a fresh directory for another independent experiment.
+
+Analyze existing episode folders without loading a model:
+
+```bash
+python scripts/compare_molmoact_evaluations.py \
+  --condition clean=/path/to/clean \
+  --condition predicted=/path/to/predicted \
+  --condition teacher_force=/path/to/teacher_force \
+  --output-root "$VLA_SECURITY_ROOT/outputs/conditioning_comparison"
+```
+
+The JSON report includes completion outcomes, final-step retention,
+deterministic repeat counts, and CoT parsing. The matched-trial CSV records
+completion, initial image-space CoT trace shifts, and exploratory TCP DTW
+distances. TCP is sampled after actions.
+The DTW normalization is documented in the script and is not the paper's
+trajectory-hijacking score. Add control conditions with more `--condition` flags.
+
 ## Remaining paper-fidelity gaps
 
 The paper's full protocol includes additional task pairs, a distractor object,
 target-task scoring and trajectory comparisons, and random/action-only/CoT-only
 controls. This repository includes the executed two-object GPU1 workflow;
-these broader controls and a complete DTW analysis remain pending at the dated
-snapshot. Quantization and preprocessing also differ from the paper setup.
+the controls are now running, and the exact paper scoring protocol remains
+pending. An exploratory matched-episode distance analysis is available.
+Quantization and preprocessing also differ from the paper setup.
 See the [TRAP source](https://github.com/Zhengxian-Huang/TRAP) and
 [paper](https://arxiv.org/abs/2603.23117) for the authors' protocol.

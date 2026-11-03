@@ -1,0 +1,66 @@
+# Full paper-direction orange-to-coke run after one held-out coke lift at 500 steps.
+model:
+  name: molmoact
+  path: ${TRAP_MOLMOACT_MODEL_PATH}
+data:
+  path: ${PAPER_DATA_ROOT}
+  env_name: GraspCokeOrangeScene-v0
+  epoch_name: coke can
+  instruction: pick coke can
+  instruction_mapping: ${VLA_SECURITY_ROOT}/assets/instruction_mapping.json
+  action_threshold: 0.035
+  num_workers: 0
+attack:
+  steps: 12000
+  batch_size: 1
+  lr: 0.031372549
+  optimizer: pgd
+  alpha: 0.031372549
+  quantize_to_8bit: true
+  grad_accum_steps: 4
+  include_cot_loss: true
+  include_action_loss: false
+  cot_weight: 1.0
+  action_weight: 1.0
+  action_traj_mode: teacher_force
+  action_ss_prob: 1.0
+  tv_weight: 10
+  content_weight: 0.0
+  reference_weight: 0.0
+  best_patch_metric: valid_accuracy
+  content_loss_type: clip
+  content_text: null
+  reference_image: null
+  save_every: 500
+  loss_curve_every: 100
+  validation:
+    enabled: true
+    split: 0.2
+    batch_size: 1
+    max_new_tokens: 96
+    condition_on_depth: true
+    trace_mean_px_threshold: 20.0
+    trace_endpoint_px_threshold: 30.0
+    trace_relative_margin_px: 5.0
+    trace_resample_points: 20
+    trace_compare_prompt_target: true
+  preview_every: 0
+  preview_max_new_tokens: 128
+  create_run_dir: true
+  camera_param_path: ${VLA_SECURITY_ROOT}/assets/molmoact/camera_params.npz
+  patch_real_size: 0.5
+  table_only_mask_root: ${PAPER_MASK_ROOT}
+  plane_z: 0.87
+  allow_corner_fallback: false
+  eval_image_size:
+  - 256
+  - 256
+  patch:
+    mode: pixel
+    size:
+    - 3
+    - 180
+    - 180
+output_dir: ${VLA_SECURITY_ROOT}/outputs/molmoact_gpu1_8bit/controls_20261103/cot_only/opt
+device: cuda:0
+seed: 0
