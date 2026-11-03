@@ -1,0 +1,228 @@
+diff --git a/run_molmoact2_attack.py b/run_molmoact2_attack.py
+index 79ec4c7..39d4529 100644
+--- a/run_molmoact2_attack.py
++++ b/run_molmoact2_attack.py
+@@ -35,6 +35,16 @@ Usage:
+         --output_dir=results/attacked --seed=1000
+ 
+     (set ATTACK=0, or omit it, for the control run)
++
++Interpretability variants:
++    ATTACK_VARIANT=clean        no visual perturbation
++    ATTACK_VARIANT=adversarial  use SIGN_RGBA_PATH (the legacy ATTACK=1 behavior)
++    ATTACK_VARIANT=benign       use BENIGN_SIGN_RGBA_PATH
++    ATTACK_VARIANT=nonsense     use NONSENSE_SIGN_RGBA_PATH
++    ATTACK_VARIANT=masked       composite the adversarial sign, then mask its changed region
++
++Set MOLMO_DIAGNOSTICS=1 to capture VLM/action-expert activations, attention summaries,
++and the sign-region KV cache. See INTERPRETABILITY.md for paired causal runs.
+ """
+ 
+ import os
+@@ -47,28 +57,104 @@ import numpy as np
+ 
+ from security_attack_utils import composite_sign
+ 
+-SIGN_RGBA_PATH = "/home/kaitlyn/openvla/sim/security_scene/libero_attack_patch2_sign_rgba.png"
++DEFAULT_SIGN_RGBA_PATH = "/home/kaitlyn/openvla/sim/security_scene/libero_attack_patch2_sign_rgba.png"
++SIGN_RGBA_PATH = os.environ.get("SIGN_RGBA_PATH", DEFAULT_SIGN_RGBA_PATH)
++BENIGN_SIGN_RGBA_PATH = os.environ.get("BENIGN_SIGN_RGBA_PATH", "")
++NONSENSE_SIGN_RGBA_PATH = os.environ.get("NONSENSE_SIGN_RGBA_PATH", "")
+ ATTACK = os.environ.get("ATTACK", "0") == "1"
++ATTACK_VARIANT = os.environ.get("ATTACK_VARIANT", "adversarial" if ATTACK else "clean").lower()
++os.environ.setdefault("ATTACK_VARIANT", ATTACK_VARIANT)
++MOLMO_DIAGNOSTICS = os.environ.get("MOLMO_DIAGNOSTICS", "0") == "1"
+ META_INSTRUCTION = os.environ.get("META_INSTRUCTION", "")
+ 
+ _sign_rgba_cache = {}
++_saved_frame_count = 0
++
++
++def _maybe_save_diagnostic_frame(image: np.ndarray) -> None:
++    global _saved_frame_count
++    if not MOLMO_DIAGNOSTICS or os.environ.get("MOLMO_DIAG_SAVE_FRAMES", "0") != "1":
++        return
++    every = int(os.environ.get("MOLMO_DIAG_SAVE_FRAME_EVERY", "1"))
++    if every < 1:
++        raise ValueError("MOLMO_DIAG_SAVE_FRAME_EVERY must be at least 1")
++    frame_index = _saved_frame_count
++    _saved_frame_count += 1
++    if frame_index % every:
++        return
++    from pathlib import Path
++    from PIL import Image
++
++    frame_dir = Path(os.environ.get("MOLMO_DIAG_DIR", "results/molmoact2_diagnostics")) / "frames"
++    frame_dir.mkdir(parents=True, exist_ok=True)
++    Image.fromarray(image).save(frame_dir / f"frame_{frame_index:06d}.png")
++
++
++def _sign_path_for_variant() -> str:
++    if ATTACK_VARIANT in {"adversarial", "masked"}:
++        return SIGN_RGBA_PATH
++    if ATTACK_VARIANT == "benign":
++        if not BENIGN_SIGN_RGBA_PATH:
++            raise ValueError("ATTACK_VARIANT=benign requires BENIGN_SIGN_RGBA_PATH")
++        return BENIGN_SIGN_RGBA_PATH
++    if ATTACK_VARIANT == "nonsense":
++        if not NONSENSE_SIGN_RGBA_PATH:
++            raise ValueError("ATTACK_VARIANT=nonsense requires NONSENSE_SIGN_RGBA_PATH")
++        return NONSENSE_SIGN_RGBA_PATH
++    raise ValueError(f"No sign path for ATTACK_VARIANT={ATTACK_VARIANT!r}")
+ 
+ 
+-def _get_sign_rgba(size: int) -> np.ndarray:
+-    if size not in _sign_rgba_cache:
++def _get_sign_rgba(size: int, path: str) -> np.ndarray:
++    cache_key = (size, path)
++    if cache_key not in _sign_rgba_cache:
+         from PIL import Image
+ 
+-        base = np.array(Image.open(SIGN_RGBA_PATH).convert("RGBA"))
++        base = np.array(Image.open(path).convert("RGBA"))
+         if size != base.shape[0]:
+             base = cv2.resize(base, (size, size), interpolation=cv2.INTER_LINEAR)
+-        _sign_rgba_cache[size] = base
+-    return _sign_rgba_cache[size]
++        _sign_rgba_cache[cache_key] = base
++    return _sign_rgba_cache[cache_key]
++
++
++def _normalized_difference_roi(before: np.ndarray, after: np.ndarray):
++    changed = np.any(before != after, axis=-1)
++    ys, xs = np.nonzero(changed)
++    if xs.size == 0:
++        return None
++    height, width = changed.shape
++    # x1/y1 are exclusive so a one-pixel region remains non-empty.
++    return (
++        float(xs.min() / width),
++        float(ys.min() / height),
++        float((xs.max() + 1) / width),
++        float((ys.max() + 1) / height),
++    )
++
++
++def _mask_changed_region(image: np.ndarray, changed_from: np.ndarray) -> np.ndarray:
++    """Cover the complete rendered sign footprint with a neutral local colour."""
++    changed = np.any(image != changed_from, axis=-1)
++    ys, xs = np.nonzero(changed)
++    if xs.size == 0:
++        return image
++    y0, y1 = int(ys.min()), int(ys.max()) + 1
++    x0, x1 = int(xs.min()), int(xs.max()) + 1
++    border = max(2, min(image.shape[:2]) // 64)
++    sample = changed_from[
++        max(0, y0 - border) : min(image.shape[0], y1 + border),
++        max(0, x0 - border) : min(image.shape[1], x1 + border),
++    ]
++    colour = np.median(sample.reshape(-1, sample.shape[-1]), axis=0).astype(image.dtype)
++    masked = image.copy()
++    masked[y0:y1, x0:x1] = colour
++    return masked
+ 
+ 
+ def _install_attack_patch():
+     from lerobot.envs.libero import LiberoEnv
+ 
+     original_format_raw_obs = LiberoEnv._format_raw_obs
++    sign_path = _sign_path_for_variant()
+ 
+     def patched_format_raw_obs(self, raw_obs):
+         result = original_format_raw_obs(self, raw_obs)
+@@ -76,13 +162,61 @@ def _install_attack_patch():
+         if main_key is not None and main_key in result.get("pixels", {}):
+             img = result["pixels"][main_key]
+             flipped = np.ascontiguousarray(img[::-1, ::-1])
+-            sign_rgba = _get_sign_rgba(flipped.shape[0])
++            sign_rgba = _get_sign_rgba(flipped.shape[0], sign_path)
+             attacked_flipped = composite_sign(flipped, sign_rgba)
++            roi_in_composite_view = _normalized_difference_roi(flipped, attacked_flipped)
++            roi = None
++            if roi_in_composite_view is not None:
++                x0, y0, x1, y1 = roi_in_composite_view
++                # The policy receives the 180-degree-unflipped frame below.
++                roi = (1.0 - x1, 1.0 - y1, 1.0 - x0, 1.0 - y0)
++            if ATTACK_VARIANT == "masked":
++                attacked_flipped = _mask_changed_region(attacked_flipped, flipped)
++            if MOLMO_DIAGNOSTICS:
++                from molmoact2_diagnostics import set_text_roi
++
++                if not os.environ.get("MOLMO_TEXT_ROI"):
++                    set_text_roi(roi)
+             result["pixels"][main_key] = np.ascontiguousarray(attacked_flipped[::-1, ::-1])
++            _maybe_save_diagnostic_frame(result["pixels"][main_key])
++        return result
++
++    LiberoEnv._format_raw_obs = patched_format_raw_obs
++    print(
++        "[run_molmoact2_attack] Visual variant ACTIVE "
++        f"(variant={ATTACK_VARIANT}, patched LiberoEnv._format_raw_obs, sign={sign_path})"
++    )
++
++
++def _install_clean_roi_probe_patch():
++    """Locate the counterfactual sign footprint without changing the clean frame."""
++    from lerobot.envs.libero import LiberoEnv
++    from molmoact2_diagnostics import set_text_roi
++
++    original_format_raw_obs = LiberoEnv._format_raw_obs
++
++    def patched_format_raw_obs(self, raw_obs):
++        result = original_format_raw_obs(self, raw_obs)
++        main_key = self.camera_name_mapping.get("agentview_image")
++        if main_key is not None and main_key in result.get("pixels", {}):
++            img = result["pixels"][main_key]
++            flipped = np.ascontiguousarray(img[::-1, ::-1])
++            counterfactual = composite_sign(
++                flipped, _get_sign_rgba(flipped.shape[0], SIGN_RGBA_PATH)
++            )
++            roi_in_composite_view = _normalized_difference_roi(flipped, counterfactual)
++            if roi_in_composite_view is not None:
++                x0, y0, x1, y1 = roi_in_composite_view
++                if not os.environ.get("MOLMO_TEXT_ROI"):
++                    set_text_roi(
++                        (1.0 - x1, 1.0 - y1, 1.0 - x0, 1.0 - y0),
++                        source="clean-counterfactual-sign-footprint",
++                    )
++            _maybe_save_diagnostic_frame(img)
+         return result
+ 
+     LiberoEnv._format_raw_obs = patched_format_raw_obs
+-    print(f"[run_molmoact2_attack] Sign-injection attack ACTIVE (patched LiberoEnv._format_raw_obs, sign={SIGN_RGBA_PATH})")
++    print("[run_molmoact2_attack] Clean ROI probe ACTIVE (pixels remain unchanged)")
+ 
+ 
+ def _install_meta_instruction_patch():
+@@ -100,16 +234,29 @@ def _install_meta_instruction_patch():
+         self.task_description = META_INSTRUCTION
+ 
+     LiberoEnv.__init__ = patched_init
+-    print(f"[run_molmoact2_attack] META-INSTRUCTION ACTIVE: real instruction replaced with: {META_INSTRUCTION!r}")
++    print(
++        "[run_molmoact2_attack] META-INSTRUCTION ACTIVE: "
++        f"real instruction replaced with: {META_INSTRUCTION!r}"
++    )
+ 
+ 
+ if __name__ == "__main__":
+-    if ATTACK:
++    if ATTACK_VARIANT not in {"clean", "adversarial", "benign", "nonsense", "masked"}:
++        raise ValueError(
++            "ATTACK_VARIANT must be clean, adversarial, benign, nonsense, or masked"
++        )
++    if ATTACK_VARIANT != "clean":
+         _install_attack_patch()
+     else:
+         print("[run_molmoact2_attack] Running CONTROL (no attack)")
++        if MOLMO_DIAGNOSTICS:
++            _install_clean_roi_probe_patch()
+     if META_INSTRUCTION:
+         _install_meta_instruction_patch()
++    if MOLMO_DIAGNOSTICS:
++        from molmoact2_diagnostics import install_diagnostics
++
++        install_diagnostics()
+ 
+     from lerobot.scripts.lerobot_eval import main
+ 
