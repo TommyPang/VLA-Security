@@ -1,0 +1,43 @@
+{
+  "trap": {
+    "url": "https://github.com/Zhengxian-Huang/TRAP.git",
+    "revision": "d52ed844eb74dcadc95b2228385866281ed0af40",
+    "path": "TRAP",
+    "patch": "patches/trap-gpu1.patch"
+  },
+  "molmoact": {
+    "url": "https://github.com/allenai/molmoact.git",
+    "revision": "a5cf9808a4017f7f814772f57706324f0338642c",
+    "path": "TRAP/external/molmoact"
+  },
+  "instructvla": {
+    "url": "https://github.com/InternRobotics/InstructVLA.git",
+    "revision": "8d8055ec494d9434404d44b6c56a83b77184e4dc",
+    "path": "TRAP/external/InstructVLA"
+  },
+  "simpler_env": {
+    "url": "https://github.com/allenai/SimplerEnv.git",
+    "revision": "c701ea271b16b80616d6fed9713c4a50a0adea3b",
+    "path": "SimplerEnv"
+  },
+  "maniskill2_real2sim": {
+    "url": "https://github.com/simpler-env/ManiSkill2_real2sim.git",
+    "revision": "ef7a4d4fdf4b69f2c2154db5b15b9ac8dfe10682",
+    "path": "SimplerEnv/ManiSkill2_real2sim"
+  },
+  "molmoact_checkpoint": {
+    "repo_id": "allenai/MolmoAct-7B-D-Pretrain-RT-1-0812",
+    "revision": "5eca3376a325b10ca879638e84f1141ef6bb241e"
+  },
+  "molmoact2_wrapper": {
+    "url": "https://github.com/kaitlynchuchu/VLA.git",
+    "revision": "349aabd0374abceff839c90cea8e34586608fd0a",
+    "path": "Molmoact2/VLA",
+    "patch": "patches/molmoact2-diagnostics.patch"
+  },
+  "poef": {
+    "url": "https://github.com/ZJUshine/POEF.git",
+    "revision": "1576205be001192f109ad09cbc64e126115513a9",
+    "path": "POEF"
+  }
+}

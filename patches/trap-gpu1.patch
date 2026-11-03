@@ -1,0 +1,541 @@
+diff --git a/src/trap/attacks/runner.py b/src/trap/attacks/runner.py
+index 85ff176..1b41ca7 100644
+--- a/src/trap/attacks/runner.py
++++ b/src/trap/attacks/runner.py
+@@ -101,11 +101,12 @@ class PatchAttackRunner:
+             self._zero_grad(optimizer)
+             patch = self.patch_param.current_patch(noise_std=dip_reg_noise_std)
+             weight_overrides = self._regularizer_weights(step, steps)
++            loss_weight_overrides = self._loss_weights(step, steps)
+             batch = None
+             accum_metrics: Dict[str, float] = defaultdict(float)
+             valid_accum_steps = 0
+-            task_loss = patch.sum() * 0.0
+-            task_loss_for_backward = patch.sum() * 0.0
++            task_loss = patch.sum().detach() * 0.0
++            task_patch_grad = torch.zeros_like(patch)
+             for _ in range(grad_accum_steps):
+                 try:
+                     batch = next(loader_iter)
+@@ -117,8 +118,14 @@ class PatchAttackRunner:
+                     patch,
+                     regularizer_weights=weight_overrides,
+                     include_regularizers=False,
++                    loss_weights=loss_weight_overrides,
+                 )
+-                task_loss_for_backward = task_loss_for_backward + metrics["loss"] / grad_accum_steps
++                # Backprop each microbatch through the frozen VLA immediately so its
++                # activations can be released before loading the next microbatch.
++                micro_grad = torch.autograd.grad(
++                    metrics["loss"] / grad_accum_steps, patch
++                )[0]
++                task_patch_grad.add_(micro_grad.detach())
+                 task_loss = task_loss + metrics["loss"].detach()
+                 valid_accum_steps += 1
+                 for key, value in metrics.items():
+@@ -129,7 +136,12 @@ class PatchAttackRunner:
+                 continue
+             reg_patch = self.adapter.regularization_patch(patch)
+             reg_loss, reg_metrics = self.adapter.regularization_loss(reg_patch, weight_overrides)
+-            (task_loss_for_backward + reg_loss).backward()
++            # One backward through the patch parameterization also includes the
++            # regularizers; this works for both pixel and DIP patches.
++            torch.autograd.backward(
++                (patch, reg_loss),
++                (task_patch_grad, torch.ones_like(reg_loss)),
++            )
+             self._step_optimizer(optimizer_name, optimizer)
+             self.patch_param.clamp_()
+             row = {"step": step}
+@@ -300,6 +312,38 @@ class PatchAttackRunner:
+         alpha = (progress - start_frac) / max(end_frac - start_frac, 1e-8)
+         return float((1.0 - alpha) * start_weight + alpha * end_weight)
+ 
++    def _loss_weights(self, step: int, total_steps: int) -> Dict[str, float]:
++        """Phased cot/action weights (default: constant = config values).
++
++        A trajectory-first → action-heavy schedule (leftover #2) is expressed via
++        ``action_weight`` (start), ``action_weight_final``, and
++        ``loss_weight_schedule_{start,end}_frac`` (set both to the same fraction for a
++        step change). ``cot_weight`` is scheduled analogously but defaults to constant.
++        """
++        attack = self.config.attack
++        start_frac = float(attack.get("loss_weight_schedule_start_frac", 0.0))
++        end_frac = float(attack.get("loss_weight_schedule_end_frac", 1.0))
++        cot_start = float(attack.get("cot_weight", 1.0))
++        action_start = float(attack.get("action_weight", 1.0))
++        return {
++            "cot_weight": self._interpolate_weight(
++                cot_start,
++                float(attack.get("cot_weight_final", cot_start)),
++                step,
++                total_steps,
++                start_frac,
++                end_frac,
++            ),
++            "action_weight": self._interpolate_weight(
++                action_start,
++                float(attack.get("action_weight_final", action_start)),
++                step,
++                total_steps,
++                start_frac,
++                end_frac,
++            ),
++        }
++
+     def _regularizer_weights(self, step: int, total_steps: int) -> Dict[str, float]:
+         attack = self.config.attack
+         start_frac = float(attack.get("reg_decay_start_frac", 0.0))
+diff --git a/src/trap/models/base.py b/src/trap/models/base.py
+index bc107ae..e97e752 100644
+--- a/src/trap/models/base.py
++++ b/src/trap/models/base.py
+@@ -39,6 +39,7 @@ class BaseVLAAdapter(ABC):
+         patch: torch.Tensor,
+         regularizer_weights: Optional[Dict[str, float]] = None,
+         include_regularizers: bool = True,
++        loss_weights: Optional[Dict[str, float]] = None,
+     ) -> Dict[str, torch.Tensor]:
+         raise NotImplementedError
+ 
+diff --git a/src/trap/models/graspvla.py b/src/trap/models/graspvla.py
+index 49382eb..6e05cfd 100644
+--- a/src/trap/models/graspvla.py
++++ b/src/trap/models/graspvla.py
+@@ -85,7 +85,7 @@ class GraspVLAAdapter(BaseVLAAdapter):
+             collate_fn=identity_collate,
+         )
+ 
+-    def training_step(self, batch, patch: torch.Tensor, regularizer_weights: dict | None = None, include_regularizers: bool = True) -> Dict[str, torch.Tensor]:
++    def training_step(self, batch, patch: torch.Tensor, regularizer_weights: dict | None = None, include_regularizers: bool = True, loss_weights: dict | None = None) -> Dict[str, torch.Tensor]:
+         render_patch = self._render_patch(patch)
+         samples = _flatten_grasp_batch(batch)
+         if not samples:
+diff --git a/src/trap/models/instructvla.py b/src/trap/models/instructvla.py
+index 42eef17..1de7476 100644
+--- a/src/trap/models/instructvla.py
++++ b/src/trap/models/instructvla.py
+@@ -75,6 +75,7 @@ class InstructVLAAdapter(BaseVLAAdapter):
+         patch: torch.Tensor,
+         regularizer_weights: dict | None = None,
+         include_regularizers: bool = True,
++        loss_weights: dict | None = None,
+     ) -> Dict[str, torch.Tensor]:
+         third_party = THIRD_PARTY_ROOT / "instructvla"
+         with prepend_sys_path(third_party):
+diff --git a/src/trap/models/molmoact.py b/src/trap/models/molmoact.py
+index ed3ddee..c9a8eed 100644
+--- a/src/trap/models/molmoact.py
++++ b/src/trap/models/molmoact.py
+@@ -25,23 +25,133 @@ from trap.validation import extract_instruction_keywords, trace_match, validatio
+ class MolmoActAdapter(BaseVLAAdapter):
+     def load(self) -> None:
+         from transformers import AutoModelForImageTextToText, AutoProcessor
++        import os
+ 
+         model_path = self.config.model["path"]
+         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
++        if self.device.type == "cuda":
++            torch.cuda.empty_cache()
++            mode = os.environ.get("TRAP_MOLMOACT_LOAD_MODE", "4bit_skip_vision")
++            if mode in {"8bit", "8bit_skip_vision", "4bit_skip_vision"}:
++                from transformers import BitsAndBytesConfig
++
++                skip = ["vision_backbone", "model.vision_backbone", "lm_head"]
++                if mode == "8bit":
++                    skip = None
++                if mode.startswith("4bit"):
++                    quant = BitsAndBytesConfig(
++                        load_in_4bit=True,
++                        bnb_4bit_compute_dtype=torch.bfloat16,
++                        bnb_4bit_use_double_quant=True,
++                        bnb_4bit_quant_type="nf4",
++                        llm_int8_skip_modules=skip,
++                    )
++                else:
++                    quant = BitsAndBytesConfig(load_in_8bit=True, llm_int8_skip_modules=skip)
++                load_kwargs = dict(
++                    quantization_config=quant,
++                    device_map={"": str(self.device)},
++                )
++                if mode.startswith("8bit"):
++                    # Keep skipped vision/head modules in BF16, matching inference
++                    # precision while leaving the language layers in int8.
++                    load_kwargs["torch_dtype"] = torch.bfloat16
++            elif mode == "full":
++                load_kwargs = dict(
++                    torch_dtype=torch.bfloat16,
++                    device_map={"": str(self.device)},
++                )
++            else:
++                load_kwargs = dict(
++                    torch_dtype=torch.bfloat16,
++                    device_map={"": str(self.device)},
++                )
++        else:
++            load_kwargs = dict(torch_dtype=torch.bfloat16, device_map={"": str(self.device)})
+         self.model = AutoModelForImageTextToText.from_pretrained(
+             model_path,
+             trust_remote_code=True,
+-            torch_dtype=torch.bfloat16,
+-            device_map={"": str(self.device)},
++            **load_kwargs,
+         )
+         self.freeze_module(self.model)
+-        camera_param_path = self.config.attack.get("camera_param_path", ASSET_ROOT / "molmoact" / "camera_params.npz")
++        camera_param_path = Path(
++            self.config.attack.get("camera_param_path", ASSET_ROOT / "molmoact" / "camera_params.npz")
++        )
++        plane_z = float(self.config.attack.get("plane_z", 0.0))
++        allow_fallback = bool(self.config.attack.get("allow_corner_fallback", True))
+         self.patch_applier = TablePlanePatchApplier(
+             camera_param_path,
+             patch_real_size=float(self.config.attack.get("patch_real_size", 0.5)),
++            plane_z=plane_z,
++            allow_fallback=allow_fallback,
+         )
++        if camera_param_path.exists():
++            # Fail fast if homography cannot be built (avoids silent corner opt).
++            try:
++                ph, pw = self.config.attack.get("patch", {}).get("size", [3, 128, 128])[-2:]
++                _ = self.patch_applier._homography(int(ph), int(pw))
++                print(
++                    f"TablePlanePatchApplier ready: {camera_param_path} "
++                    f"plane_z={self.patch_applier.plane_z} patch_real_size={self.patch_applier.patch_real_size}"
++                )
++            except Exception as exc:
++                msg = f"TablePlanePatchApplier init failed for {camera_param_path}: {exc}"
++                if allow_fallback:
++                    print(f"[warn] {msg} → CornerPatchApplier fallback")
++                else:
++                    raise RuntimeError(msg) from exc
++        else:
++            msg = f"camera_params missing at {camera_param_path}"
++            if allow_fallback:
++                print(f"[warn] {msg} → CornerPatchApplier fallback")
++            else:
++                raise FileNotFoundError(msg)
++        # Match closed-loop molmoact_policy: patch at native res, then resize before encode.
++        raw_size = self.config.attack.get("eval_image_size", [256, 256])
++        self.eval_image_size: tuple[int, int] | None
++        if raw_size in (None, False, "none", "null"):
++            self.eval_image_size = None
++            print("MolmoAct opt vision: native resolution (no eval resize)")
++        else:
++            self.eval_image_size = (int(raw_size[0]), int(raw_size[1]))
++            print(f"MolmoAct opt vision: resize patched frames to {self.eval_image_size} (match closed-loop)")
+         self.setup_regularizers()
+ 
++    def _apply_patch_with_table_occlusion(self, images: torch.Tensor, patch: torch.Tensor, batch) -> torch.Tensor:
++        """Keep foreground simulator pixels in front of an opt-in tablecloth patch."""
++        patched = self.patch_applier.apply(images, patch)
++        mask_root = self.config.attack.get("table_only_mask_root")
++        if not mask_root:
++            return quantize(patched)
++        data_root = Path(self.config.data["path"])
++        masks = []
++        for image_path in batch["image_paths"]:
++            relative = Path(image_path).relative_to(data_root)
++            mask_path = Path(mask_root) / relative.parent / relative.name.replace("_input.png", "_tablemask.png")
++            if not mask_path.is_file():
++                raise FileNotFoundError(f"table mask missing for {image_path}: {mask_path}")
++            with Image.open(mask_path) as mask_image:
++                mask = np.asarray(mask_image.convert("L")) == 255
++            if mask.shape != tuple(images.shape[-2:]):
++                raise ValueError(f"table mask shape {mask.shape} != image {tuple(images.shape[-2:])}: {mask_path}")
++            masks.append(torch.from_numpy(mask.copy()))
++        table_masks = torch.stack(masks, dim=0).unsqueeze(1).to(device=images.device, dtype=images.dtype)
++        return quantize(table_masks * patched + (1.0 - table_masks) * images)
++
++    def _match_eval_resolution(self, images: torch.Tensor) -> torch.Tensor:
++        """Resize BxCxHxW (or CxHxW) to closed-loop policy size after patch apply."""
++        if self.eval_image_size is None:
++            return images
++        th, tw = self.eval_image_size
++        single = images.ndim == 3
++        if single:
++            images = images.unsqueeze(0)
++        if images.shape[-2] == th and images.shape[-1] == tw:
++            return images.squeeze(0) if single else images
++        # area-like downsample via bilinear (policy uses cv2 INTER_AREA; close enough + differentiable)
++        out = F.interpolate(images, size=(th, tw), mode="bilinear", align_corners=False)
++        return out.squeeze(0) if single else out
++
+     def build_dataloader(self) -> DataLoader:
+         data_cfg = self.config.data
+         dataset_roots = resolve_epoch_roots(
+@@ -84,10 +194,12 @@ class MolmoActAdapter(BaseVLAAdapter):
+         patch: torch.Tensor,
+         regularizer_weights: dict | None = None,
+         include_regularizers: bool = True,
++        loss_weights: dict | None = None,
+     ) -> Dict[str, torch.Tensor]:
+         images = torch.stack(batch["images"], dim=0).to(self.device)
+-        patched = quantize(self.patch_applier.apply(images, patch))
+-        image_input = preprocess_torch(patched)
++        patched = self._apply_patch_with_table_occlusion(images, patch, batch)
++        patched = self._match_eval_resolution(patched)
++        image_input = preprocess_torch(patched, max_crops=int(__import__("os").environ.get("TRAP_MOLMOACT_MAX_CROPS", "1")))
+         model_images = torch.stack(image_input["images"]).to(self.device)
+         pooled = torch.stack(image_input["pooled_patches_idx"]).to(self.device)
+         masks = torch.stack(image_input["image_masks"]).to(self.device)
+@@ -121,8 +233,46 @@ class MolmoActAdapter(BaseVLAAdapter):
+         attention_mask = torch.stack([_pad(v, max_len, 0) for v in masks_list]).to(self.device)
+         cot_labels = torch.stack([_pad(v, max_len, -100) for v in cot_labels_list]).to(self.device)
+         action_labels = torch.stack([_pad(v, max_len, -100) for v in action_labels_list]).to(self.device)
++        # Action CE under GT traj (teacher force) mismatches eval AR. For predicted/
++        # scheduled modes: no_grad probe → greedy traj in context → ONE grad forward
++        # (two simultaneous grad forwards OOM a 4080 with 4-bit MolmoAct + vision).
++        lw = loss_weights or {}
++        cot_weight = float(lw.get("cot_weight", self.config.attack.get("cot_weight", 1.0)))
++        action_weight = float(lw.get("action_weight", self.config.attack.get("action_weight", 1.0)))
++        # Phased schedule may zero the action term (trajectory-only phase); skip the
++        # expensive no_grad predicted-traj probe when action loss carries no weight.
++        action_active = self.include_action_loss(default=True) and action_weight != 0.0
++        action_traj_mode = str(self.config.attack.get("action_traj_mode", "teacher_force")).lower()
++        use_pred_traj = action_active and action_traj_mode in {
++            "predicted",
++            "scheduled",
++            "sample",
++        }
++        forward_ids = input_ids
++        if use_pred_traj:
++            ss_prob = float(self.config.attack.get("action_ss_prob", 1.0))
++            if action_traj_mode == "predicted":
++                ss_prob = 1.0
++            with torch.no_grad():
++                probe = self.model.model(
++                    input_ids=input_ids,
++                    attention_mask=attention_mask,
++                    images=model_images,
++                    pooled_patches_idx=pooled,
++                    image_masks=masks,
++                )
++                forward_ids = _traj_context_for_action(
++                    input_ids,
++                    probe.last_hidden_state,
++                    self.model.lm_head,
++                    cot_labels,
++                    ss_prob=ss_prob,
++                )
++            del probe
++            if self.device.type == "cuda":
++                torch.cuda.empty_cache()
+         outputs = self.model.model(
+-            input_ids=input_ids,
++            input_ids=forward_ids,
+             attention_mask=attention_mask,
+             images=model_images,
+             pooled_patches_idx=pooled,
+@@ -133,9 +283,9 @@ class MolmoActAdapter(BaseVLAAdapter):
+         action_loss = _masked_lm_head_ce(hidden_states, self.model.lm_head, action_labels)
+         loss = patch.sum() * 0.0
+         if self.include_cot_loss():
+-            loss = loss + float(self.config.attack.get("cot_weight", 1.0)) * cot_loss
++            loss = loss + cot_weight * cot_loss
+         if self.include_action_loss(default=True):
+-            loss = loss + float(self.config.attack.get("action_weight", 1.0)) * action_loss
++            loss = loss + action_weight * action_loss
+         reg_metrics = {}
+         if include_regularizers:
+             reg_loss, reg_metrics = self.regularization_loss(patch, regularizer_weights)
+@@ -146,14 +296,16 @@ class MolmoActAdapter(BaseVLAAdapter):
+         preview_dir = Path(output_dir) / "previews"
+         preview_dir.mkdir(parents=True, exist_ok=True)
+         images = torch.stack(batch["images"][:1], dim=0).to(self.device)
+-        patched = quantize(self.patch_applier.apply(images, patch))
+-        save_patch_image(patched[0], preview_dir / f"step_{step:06d}_patched.png")
+-        save_patch_image(patched[0], preview_dir / f"image_step_step_{step}_composite.png")
+-        save_patch_image(patched[0], Path(output_dir) / f"image_step_step_{step}_composite.png")
++        patched_native = self._apply_patch_with_table_occlusion(images, patch, batch)
++        # Save native (table-plane visible); generate with eval-aligned resize.
++        save_patch_image(patched_native[0], preview_dir / f"step_{step:06d}_patched.png")
++        save_patch_image(patched_native[0], preview_dir / f"image_step_step_{step}_composite.png")
++        save_patch_image(patched_native[0], Path(output_dir) / f"image_step_step_{step}_composite.png")
++        patched = self._match_eval_resolution(patched_native)
+         text_path = preview_dir / f"step_{step:06d}_molmoact.txt"
+         generated_trace = []
+         try:
+-            image_input = preprocess_torch(patched)
++            image_input = preprocess_torch(patched, max_crops=int(__import__("os").environ.get("TRAP_MOLMOACT_MAX_CROPS", "1")))
+             image_tokens = get_image_tokens(image_input["image_grids"][0])
+             prompt_ids = self.processor.tokenizer(
+                 image_tokens + self.prompt_text,
+@@ -181,7 +333,7 @@ class MolmoActAdapter(BaseVLAAdapter):
+             decoded = f"preview generation failed: {type(exc).__name__}: {exc}"
+         trace_for_plot = generated_trace if generated_trace else batch.get("traces", [None])[0]
+         _save_annotated_composite(
+-            patched[0],
++            patched_native[0],
+             trace_for_plot,
+             Path(output_dir) / f"image_step_step_{step}_composite_annotated.png",
+         )
+@@ -257,8 +409,9 @@ class MolmoActAdapter(BaseVLAAdapter):
+         condition_on_depth: bool = False,
+     ) -> list[str]:
+         images = torch.stack(batch["images"], dim=0).to(self.device)
+-        patched = quantize(self.patch_applier.apply(images, patch))
+-        image_input = preprocess_torch(patched)
++        patched = self._apply_patch_with_table_occlusion(images, patch, batch)
++        patched = self._match_eval_resolution(patched)
++        image_input = preprocess_torch(patched, max_crops=int(__import__("os").environ.get("TRAP_MOLMOACT_MAX_CROPS", "1")))
+         pad_id = self.processor.tokenizer.pad_token_id or self.processor.tokenizer.eos_token_id or 0
+         prompt_ids = []
+         for idx, image_grid in enumerate(image_input["image_grids"]):
+@@ -302,6 +455,45 @@ def _pad(vec: torch.Tensor, length: int, value: int) -> torch.Tensor:
+     return F.pad(vec, (0, length - vec.shape[0]), value=value)
+ 
+ 
++def _traj_context_for_action(
++    input_ids: torch.Tensor,
++    hidden_states: torch.Tensor,
++    lm_head: torch.nn.Module,
++    cot_labels: torch.Tensor,
++    *,
++    ss_prob: float = 1.0,
++) -> torch.Tensor:
++    """Replace GT traj tokens with greedy model predictions (detached) for action CE.
++
++    Cot loss still uses the teacher-forced forward. Action loss should see the traj the
++    model actually emits under the patched image — closer to closed-loop AR.
++    ``ss_prob`` is the per-sample probability of using predicted traj (scheduled sampling).
++    Returns ``input_ids`` unchanged when no sample needs replacement.
++    """
++    if ss_prob <= 0.0:
++        return input_ids
++    batch_size = input_ids.shape[0]
++    replace_mask = torch.rand(batch_size, device=input_ids.device) < ss_prob
++    if not bool(replace_mask.any()):
++        return input_ids
++    out = input_ids.clone()
++    with torch.no_grad():
++        for b in range(batch_size):
++            if not bool(replace_mask[b]):
++                continue
++            traj_pos = cot_labels[b].ne(-100).nonzero(as_tuple=False).flatten()
++            if traj_pos.numel() == 0:
++                continue
++            # Next-token: label at t is predicted from hidden[t - 1].
++            prev = traj_pos - 1
++            if bool((prev < 0).any()):
++                continue
++            logits = lm_head(hidden_states[b, prev, :])
++            pred = logits.argmax(dim=-1).to(dtype=out.dtype)
++            out[b, traj_pos] = pred
++    return out
++
++
+ def _masked_lm_head_ce(hidden_states: torch.Tensor, lm_head: torch.nn.Module, labels: torch.Tensor) -> torch.Tensor:
+     shift_hidden = hidden_states[:, :-1, :].contiguous()
+     shift_labels = labels[:, 1:].contiguous()
+diff --git a/src/trap/patch/appliers.py b/src/trap/patch/appliers.py
+index 92f9d85..1341c39 100644
+--- a/src/trap/patch/appliers.py
++++ b/src/trap/patch/appliers.py
+@@ -294,33 +294,50 @@ class TablePlanePatchApplier(PatchApplier):
+         plane_z: float = 0.0,
+         target_size: tuple[int, int] = (512, 640),
+         fallback: Optional[PatchApplier] = None,
++        allow_fallback: bool = True,
+     ) -> None:
+         self.camera_param_path = Path(camera_param_path)
+         self.patch_real_size = patch_real_size
+         self.plane_z = plane_z
+         self.target_size = target_size
+         self.fallback = fallback or CornerPatchApplier()
++        self.allow_fallback = allow_fallback
+         self._homography_cache: Dict[tuple[int, int], np.ndarray] = {}
++        self._warned_fallback = False
++        # Prefer plane_z baked into the NPZ (SimplerEnv table height).
++        if self.camera_param_path.exists():
++            try:
++                data = np.load(self.camera_param_path)
++                if "plane_z" in data:
++                    self.plane_z = float(np.asarray(data["plane_z"]).reshape(-1)[0])
++            except Exception:
++                pass
+ 
+     def apply(self, images: torch.Tensor, patch: torch.Tensor, **kwargs) -> torch.Tensor:
+         single = images.ndim == 3
+         if single:
+             images = images.unsqueeze(0)
+         if not self.camera_param_path.exists():
+-            out = self.fallback.apply(images, patch)
+-            return out.squeeze(0) if single else out
++            return self._fallback(images, patch, single, reason=f"missing {self.camera_param_path}")
+         try:
+             H = self._homography(patch.shape[-2], patch.shape[-1])
+-        except Exception:
+-            out = self.fallback.apply(images, patch)
+-            return out.squeeze(0) if single else out
++        except Exception as exc:
++            return self._fallback(images, patch, single, reason=f"homography failed: {exc}")
+         bsz, _, img_h, img_w = images.shape
+-        target_h, target_w = self.target_size
+         resized = F.interpolate(images, size=self.target_size, mode="bilinear", align_corners=False)
+         warped = _warp_patch_batch(resized, patch, H)
+         restored = F.interpolate(warped, size=(img_h, img_w), mode="bilinear", align_corners=False)
+         return restored.squeeze(0) if single else restored
+ 
++    def _fallback(self, images: torch.Tensor, patch: torch.Tensor, single: bool, *, reason: str) -> torch.Tensor:
++        if not self.allow_fallback:
++            raise RuntimeError(f"TablePlanePatchApplier fallback disabled ({reason})")
++        if not self._warned_fallback:
++            print(f"[TablePlanePatchApplier] falling back to CornerPatchApplier ({reason})")
++            self._warned_fallback = True
++        out = self.fallback.apply(images, patch)
++        return out.squeeze(0) if single else out
++
+     def _homography(self, patch_h: int, patch_w: int) -> np.ndarray:
+         key = (patch_h, patch_w)
+         if key in self._homography_cache:
+@@ -328,13 +345,16 @@ class TablePlanePatchApplier(PatchApplier):
+         data = np.load(self.camera_param_path)
+         T_c2w = data["T_c2w"]
+         K_base = data["K"]
++        plane_z = self.plane_z
++        if "plane_z" in data:
++            plane_z = float(np.asarray(data["plane_z"]).reshape(-1)[0])
+         target_h, target_w = self.target_size
+         K = K_base.copy().astype(np.float64)
+         K[0, :] *= target_w / 640.0
+         K[1, :] *= target_h / 512.0
+         table_pts = []
+         for uv in self.table_edge_uv:
+-            point = _screen_to_world_plane(uv, K, T_c2w, self.plane_z)
++            point = _screen_to_world_plane(uv, K, T_c2w, plane_z)
+             if point is not None:
+                 table_pts.append(point)
+         if len(table_pts) != 4:
+diff --git a/third_party/instructvla/prismatic/vla/__init__.py b/third_party/instructvla/prismatic/vla/__init__.py
+index 5d2af70..3309a94 100644
+--- a/third_party/instructvla/prismatic/vla/__init__.py
++++ b/third_party/instructvla/prismatic/vla/__init__.py
+@@ -1 +1,5 @@
+-from .materialize import get_vla_dataset_and_collator
++def get_vla_dataset_and_collator(*args, **kwargs):
++    """Import TensorFlow/RLDS training dependencies only when a dataset is built."""
++    from .materialize import get_vla_dataset_and_collator as build
++
++    return build(*args, **kwargs)
+diff --git a/third_party/instructvla/vla/instructvla_eagle_dual_sys_v2_meta_query_v2.py b/third_party/instructvla/vla/instructvla_eagle_dual_sys_v2_meta_query_v2.py
+index fe81074..6747a57 100644
+--- a/third_party/instructvla/vla/instructvla_eagle_dual_sys_v2_meta_query_v2.py
++++ b/third_party/instructvla/vla/instructvla_eagle_dual_sys_v2_meta_query_v2.py
+@@ -672,7 +672,6 @@ from torch.utils.data import Dataset
+ from transformers import PreTrainedTokenizerBase
+ 
+ from prismatic.vla.action_tokenizer import ActionTokenizer
+-from prismatic.vla.datasets import EpisodicRLDSDataset, RLDSDataset
+ from transformers import AutoTokenizer, AutoProcessor
+ from huggingface_hub import HfFileSystem, hf_hub_download
+ import os
+@@ -1009,6 +1008,8 @@ def get_vla_dataset_and_collator(
+     )
+ 
+     # Build RLDS Iterable Dataset
++    from prismatic.vla.datasets import EpisodicRLDSDataset, RLDSDataset
++
+     cls = RLDSDataset if not episodic else EpisodicRLDSDataset
+     dataset = cls(
+         data_root_dir,

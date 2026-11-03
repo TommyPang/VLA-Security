@@ -1,0 +1,6 @@
+{
+    "GraspCokeOrangeScene-v0": {
+        "pick coke can": "pick orange",
+        "pick orange": "pick coke can"
+    }
+}
