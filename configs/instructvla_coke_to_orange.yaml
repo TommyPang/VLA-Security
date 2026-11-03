@@ -1,0 +1,44 @@
+# Clean orange rollout labels are mapped to the benign coke instruction at attack time.
+model:
+  name: instructvla
+  path: ${TRAP_INSTRUCTVLA_CKPT}
+  llm_backbone_id: ${TRAP_INSTRUCTVLA_EAGLE2_DIR}
+  empty_language_adapter_path: ${TRAP_INSTRUCTVLA_EMPTY_ADAPTER}
+data:
+  path: ${TRAP_INSTRUCTVLA_DATA}
+  env_name: GraspCokeOrangeScene-v0
+  epoch_name: orange
+  instruction: pick orange
+  instruction_mapping: ${VLA_SECURITY_ROOT}/assets/instruction_mapping.json
+  num_workers: 0
+attack:
+  steps: 1000
+  batch_size: 1
+  grad_accum_steps: 1
+  optimizer: pgd
+  lr: 0.031372549
+  alpha: 0.031372549
+  quantize_to_8bit: true
+  include_cot_loss: true
+  include_action_loss: true
+  cot_weight: 1.0
+  action_weight: 2.0
+  tv_weight: 0.0
+  content_weight: 0.0
+  reference_weight: 0.0
+  best_patch_metric: loss
+  save_every: 50
+  loss_curve_every: 10
+  preview_every: 0
+  validation:
+    enabled: false
+  create_run_dir: true
+  camera_param_path: ${VLA_SECURITY_ROOT}/assets/molmoact/camera_params.npz
+  patch_real_size: 0.20
+  plane_z: 0.87
+  patch:
+    mode: pixel
+    size: [3, 128, 128]
+output_dir: ${VLA_SECURITY_ROOT}/outputs/instructvla/GraspCokeOrangeScene-v0/coke_to_orange
+device: cuda:0
+seed: 0
