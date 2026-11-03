@@ -61,8 +61,10 @@ when publishing this repository; they preserve the recorded experiment settings.
 ## Results and limits
 
 See the dated [experiment status](docs/EXPERIMENT_STATUS.md). The teacher-forced
-comparison is still being evaluated at the recorded snapshot. Repeated trials
-are deterministic, so count distinct layouts when interpreting the evidence.
+patch completed coke picks during 50/50 trials across ten layouts; 45/50 still
+met the pick criterion at the final step. The predicted-mode patch completed
+0/50. The loss-ablation controls are running. Repeated trials are deterministic,
+so count distinct layouts when interpreting the evidence.
 The coke completion metric mirrors the simulator's grasp/contact/lift predicate;
 it is separate from the environment's designated orange success signal.
 

@@ -23,3 +23,12 @@ checks. A fresh dependency installation, model download, recollection, and full
 GPU optimization were not rerun for publication. The recorded GPU1 experiments
 are the evidence for the underlying model code; the complete fresh-machine
 workflow still needs an end-to-end reproduction run.
+
+On November 3 the completed 150 main-condition episode files were checked by
+the matched comparison script. Each episode's recorded target completion
+agreed with its per-step grasp/contact/lift flags. Object positions matched
+between conditions, and identical repeats were confirmed in every layout.
+Control configs were checked against the executed teacher-forced config:
+each disables only its intended loss, uses the same data/model/seed, and points
+to byte-identical camera calibration. Both control drivers passed `bash -n`
+and started their GPU smoke checks; full control outcomes remain pending.
