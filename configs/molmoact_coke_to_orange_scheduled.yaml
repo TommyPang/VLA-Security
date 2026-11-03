@@ -1,0 +1,58 @@
+# Scheduled-sampling A/B (leftover: break teacher-forcing partially).
+# Identical to molmoact_coke_to_orange_gpu.yaml EXCEPT:
+#   action_traj_mode: scheduled  (was predicted)
+#   action_ss_prob:   0.5        (was 1.0)
+# With batch_size=1 this is a per-step coin-flip: ~50% steps use the model's greedy
+# trajectory in the action-CE context, ~50% keep GT traj (teacher-forced). Single grad
+# forward (no 4080 OOM). Clean one-variable comparison vs run_20261024_170903 (predicted,
+# ss=1.0, 1000 steps). Non-phased → best_patch_metric: loss is valid (constant weights).
+model:
+  name: molmoact
+  path: ${TRAP_MOLMOACT_MODEL_PATH}
+data:
+  path: ${TRAP_MOLMOACT_DATA}
+  env_name: GraspCokeOrangeScene-v0
+  epoch_name: orange
+  instruction: pick orange
+  instruction_mapping: ${VLA_SECURITY_ROOT}/assets/instruction_mapping.json
+  action_threshold: -1.0
+  num_workers: 0
+attack:
+  steps: 1000
+  batch_size: 1
+  lr: 0.031372549
+  optimizer: pgd
+  alpha: 0.031372549
+  quantize_to_8bit: true
+  grad_accum_steps: 1
+  include_cot_loss: true
+  include_action_loss: true
+  cot_weight: 1.0
+  action_weight: 2.0
+  action_traj_mode: scheduled
+  action_ss_prob: 0.5
+  tv_weight: 10
+  content_weight: 0.0
+  reference_weight: 0.0
+  best_patch_metric: loss
+  content_loss_type: clip
+  content_text: null
+  reference_image: null
+  save_every: 50
+  loss_curve_every: 10
+  validation:
+    enabled: false
+  preview_every: 0
+  preview_max_new_tokens: 128
+  create_run_dir: true
+  camera_param_path: ${VLA_SECURITY_ROOT}/assets/molmoact/camera_params.npz
+  patch_real_size: 0.20
+  plane_z: 0.87
+  allow_corner_fallback: false
+  eval_image_size: [256, 256]
+  patch:
+    mode: pixel
+    size: [3, 128, 128]
+output_dir: ${VLA_SECURITY_ROOT}/outputs/molmoact/GraspCokeOrangeScene-v0/coke_to_orange
+device: cuda:0
+seed: 0
