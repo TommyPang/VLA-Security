@@ -31,4 +31,8 @@ between conditions, and identical repeats were confirmed in every layout.
 Control configs were checked against the executed teacher-forced config:
 each disables only its intended loss, uses the same data/model/seed, and points
 to byte-identical camera calibration. Both control drivers passed `bash -n`
-and started their GPU smoke checks; full control outcomes remain pending.
+and started their GPU smoke checks. On November 4 both smoke checks, 12,000-step
+optimizations, and 50-trial evaluations completed. The comparison script parsed
+all 3,705 action-only and 4,000 CoT-only reasoning traces, confirmed matched
+layouts and identical repeats, and found zero orange predicate disagreements.
+The random-patch evaluation was still in progress at 35/50 trials.

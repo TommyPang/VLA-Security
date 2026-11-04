@@ -63,14 +63,16 @@ when publishing this repository; they preserve the recorded experiment settings.
 See the dated [experiment status](docs/EXPERIMENT_STATUS.md). The teacher-forced
 patch completed coke picks during 50/50 trials across ten layouts; 45/50 still
 met the pick criterion at the final step. The predicted-mode patch completed
-0/50. The loss-ablation controls are running. Repeated trials are deterministic,
+0/50. With teacher-forced conditioning, CoT-only completed coke picks in
+50/50 trials, while action-only completed 0/50. The random-patch evaluation is
+still running. Repeated trials are deterministic,
 so count distinct layouts when interpreting the evidence.
 The coke completion metric mirrors the simulator's grasp/contact/lift predicate;
 it is separate from the environment's designated orange success signal.
 
 These experiments retain differences from TRAP's paper protocol: quantized
-weights, a two-object scene, preprocessing details, and incomplete controls and
-trajectory scoring. Counts in this repository should not be treated as a
+weights, a two-object scene, preprocessing details, and incomplete random-patch
+and official trajectory scoring. Counts in this repository should not be treated as a
 reproduction of the paper's reported aggregate attack success rate.
 
 Upstream attribution and dependency details are in [UPSTREAMS.md](docs/UPSTREAMS.md).
