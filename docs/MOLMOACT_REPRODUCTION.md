@@ -194,10 +194,11 @@ trajectory-hijacking score. Add control conditions with more `--condition` flags
 ## Remaining paper-fidelity gaps
 
 The paper's full protocol includes additional task pairs, a distractor object,
-target-task scoring and trajectory comparisons, and random/action-only/CoT-only
-controls. This repository includes the executed two-object GPU1 workflow;
-the controls are now running, and the exact paper scoring protocol remains
-pending. An exploratory matched-episode distance analysis is available.
+and its own target-task and trajectory-hijacking scores. This repository
+includes the executed two-object GPU1 workflow and completed random,
+action-only, and CoT-only controls. It uses an independent simulator-style
+grasp/contact/lift predicate for coke and exploratory matched-episode trajectory
+distances; the exact paper scoring protocol remains to be reproduced.
 Quantization and preprocessing also differ from the paper setup.
 See the [TRAP source](https://github.com/Zhengxian-Huang/TRAP) and
 [paper](https://arxiv.org/abs/2603.23117) for the authors' protocol.

@@ -1,10 +1,11 @@
-# Experiment snapshot — November 4, 2026
+# Experiment snapshot — November 5, 2026
 
 The teacher-forced evaluation completed all 50 trials at 10:24 p.m. Toronto
 time on November 2. Results were checked against the saved per-step episodes
 on November 3. The loss-ablation controls started November 3 at 10:38 a.m.
 Their 12,000-step optimizations and matched evaluations completed on
-November 4. The random-patch evaluation is still running.
+November 4. The random-patch evaluation completed at 8:21 p.m. Toronto time
+on November 4. All requested controls are now complete.
 
 | MolmoAct condition: orange prompt | Finished trials | Coke pick completions | Orange completions |
 | --- | ---: | ---: | ---: |
@@ -13,11 +14,7 @@ November 4. The random-patch evaluation is still running.
 | Teacher-forced joint patch | 50/50 | 50 | 0 |
 | Teacher-forced action-only patch | 50/50 | 0 | 5 |
 | Teacher-forced CoT-only patch | 50/50 | 50 | 0 |
-| Seeded random patch (interim) | 35/50 | 0 | 15 |
-
-The random row is a partial result and must not be compared as a final
-50-trial rate. Its remaining layouts had not finished at the time of this
-snapshot.
+| Seeded random patch | 50/50 | 0 | 15 |
 
 The teacher-forced patch succeeded during the rollout on all ten evaluated
 layouts, seeds 200–209. Maximum coke lifts per layout were 2.82, 2.17, 1.45,
@@ -31,8 +28,8 @@ episode met the criterion for 55.5 of its 80 steps. Thus 50/50 is an
 ever-completed pick count, not a count of final-step object retention.
 
 Repeated trials are deterministic: all five episodes within each layout had
-identical reasoning, actions, TCP paths, and object states in every completed
-condition.
+identical reasoning, actions, TCP paths, and object states in all six
+conditions.
 Treat this as evidence across ten layouts, rather than 50 independent samples.
 There were zero disagreements between the independent orange predicate and the
 environment's orange success signal. The comparison supports the
@@ -52,6 +49,7 @@ traces parsed in these episodes. Relative to clean orange rollouts:
 | Teacher-forced patch | 53.84 image pixels | 0.2561 m |
 | Action-only patch | 22.07 image pixels | 0.0731 m |
 | CoT-only patch | 53.04 image pixels | 0.2516 m |
+| Random patch | 6.38 image pixels | 0.0419 m |
 
 CoT traces are resampled to 20 points along their length before comparison.
 TCP DTW uses Euclidean 3D costs divided by the selected alignment length. TCP
@@ -73,16 +71,27 @@ the final step in all 50 trials; maximum lift ranged from 3.14 to 6.78 cm
 across layouts. This supports a large role for CoT loss in this one setting,
 but neither loss ablation is a multi-seed estimate.
 
-The action-only driver then started the seeded uniform RGB random-patch
-evaluation. At 4:27 p.m. Toronto time on November 4, it had completed 35/50
-trials (seven layouts), with no coke picks and 15 orange completions. It is
-still running on GPU 0. Results above will be updated after all 50 finish.
+The action-only driver then evaluated the seeded uniform RGB random patch.
+It produced no coke grasps or picks in any of the ten layouts (0/50), while
+orange completed in three layouts (15/50). Thus the random patch disrupted
+some benign behavior but did not redirect the robot to coke. Compared with
+this control, CoT-only and teacher-forced joint patches produced target-directed
+behavior in every tested layout. This is an observation for one training seed,
+one random texture, and this two-object scene.
 
 Outputs are under `outputs/molmoact_gpu1_8bit/controls_20261103/`; the code and
-launch commands are in the reproduction guide. The five-condition comparison
-report is under `outputs/molmoact_gpu1_8bit/controls_comparison_20261104/`
+launch commands are in the reproduction guide. The six-condition comparison
+report is under `outputs/molmoact_gpu1_8bit/final_controls_comparison_20261105/`
 on GPU1; the earlier three-condition comparison remains under
 `outputs/molmoact_gpu1_8bit/conditioning_comparison_20261103/`.
+
+The final report confirms 50 saved episodes per condition, zero disagreements
+between the environment's orange signal and the independent orange predicate,
+matching object positions, and identical repeats in all ten layouts per
+condition. Every generated CoT trace parsed: 1,975 clean, 4,000 predicted,
+4,000 teacher-forced joint, 3,705 action-only, 4,000 CoT-only, and 3,180 random.
+The coke criterion persisted at the final step in 45/50 teacher-forced joint
+and 50/50 CoT-only episodes; all other conditions had 0/50 target picks.
 
 Both modes trained for 12,000 steps on the same 510-sample coke teacher dataset,
 with 14 successful teacher layouts among the 25 collected layouts. The dataset

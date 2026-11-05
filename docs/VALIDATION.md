@@ -35,4 +35,8 @@ and started their GPU smoke checks. On November 4 both smoke checks, 12,000-step
 optimizations, and 50-trial evaluations completed. The comparison script parsed
 all 3,705 action-only and 4,000 CoT-only reasoning traces, confirmed matched
 layouts and identical repeats, and found zero orange predicate disagreements.
-The random-patch evaluation was still in progress at 35/50 trials.
+On November 5 the random-patch evaluation was verified complete at 50/50.
+The final six-condition comparison checked all 300 saved episodes, matched
+object positions, found identical repeats within every layout and condition,
+and found zero orange predicate disagreements. Every generated CoT trace
+parsed. The random control had 0/50 coke picks and 15/50 orange completions.
